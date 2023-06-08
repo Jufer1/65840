@@ -1,77 +1,123 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+	"strconv"
+	"time"
+)
 
+// for sorting by key.
+type ByKey []KeyValue
 
-//
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 // Map functions return a slice of KeyValue.
-//
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
-//
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func doMapJob(filename string, mapf func(string, string) []KeyValue, jobIndex int) []InterFilename {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
 
-//
+	sort.Sort(ByKey(kva))
+
+	interFilename := []InterFilename{}
+	for i := 0; i < len(kva); {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		filename = "mr-" + strconv.Itoa(jobIndex) + "-" + strconv.Itoa(ihash(kva[i].Key))
+		interFilename = append(interFilename, InterFilename{M: jobIndex, R: ihash(kva[i].Key)})
+		file, err = os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		enc := json.NewEncoder(file)
+		for k := i; k < j; k++ {
+			if err := enc.Encode(&kva[k]); err != nil {
+				fmt.Printf("\"fail to write json\": %v\n", "fail to write json")
+			}
+		}
+		file.Close()
+
+		i = j
+	}
+	return interFilename
+}
+
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	report := Report{}
+	response := Response{}
+	for {
+		heartbeat(&report, &response)
+		switch response.TType {
+		case MapJob:
+			report.Filename = doMapJob(response.Filename, mapf, response.TaskIndex)
+			report.WJob = response.TaskIndex
+			report.WJobType = response.TType
+		case ReduceJob:
+			fmt.Printf("\"not finish\": %v\n", "not finish")
+		case WaitJob:
+			time.Sleep(time.Second)
+		case CompleteJob:
+			fmt.Printf("\"worker exit\": %v\n", "worker exit")
+			return
+		default:
+			panic(fmt.Sprintf("unexpected jobType %v", response.TType))
+		}
+		time.Sleep(time.Second)
+	}
 
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func heartbeat(report *Report, response *Response) {
+	// report := Report{}
+	// response := Response{}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
+	ok := call("Coordinator.Heartbeat", &report, &response)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		fmt.Printf("response: %v\n", response)
 	} else {
 		fmt.Printf("call failed!\n")
 	}
 }
 
-//
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
