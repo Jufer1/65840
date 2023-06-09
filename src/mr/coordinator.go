@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 const (
@@ -18,18 +19,28 @@ const (
 
 type Coordinator struct {
 	// Your definitions here.
-	nJob     int
-	filename []string
-	nReduce  int
-	mu       sync.Mutex
-	phase    int
-	cJob     []bool
-	cJobDone []bool
+	nJob          int
+	filename      []string
+	nReduce       int
+	mu            sync.Mutex
+	phase         int
+	cJobAllocated []bool
+	cJAStamp      []int64
+	cJobDone      []bool
 }
 
 func (c *Coordinator) getJobIndex() int {
-	for i := 1; i < len(c.cJob); i++ {
-		if !c.cJob[i] {
+	for i := 1; i < len(c.cJobAllocated); i++ {
+		if !c.cJobAllocated[i] {
+			return i
+		}
+	}
+	return 0
+}
+
+func (c *Coordinator) checkALlJobDone() int {
+	for i := 1; i < len(c.cJobDone); i++ {
+		if !c.cJobDone[i] {
 			return i
 		}
 	}
@@ -52,12 +63,17 @@ func (c *Coordinator) Heartbeat(report *Report, response *Response) error {
 	case mapPhase:
 		func() {
 			if jobIndex := c.getJobIndex(); jobIndex == 0 {
-				c.phase++
+				if c.checkALlJobDone() == 0 {
+					c.phase++
+				} else {
+					response.TType = WaitJob
+				}
 			} else {
 				response.TType = MapJob
 				response.Filename = c.filename[jobIndex-1]
 				response.TaskIndex = jobIndex
-				c.cJob[jobIndex] = true
+				c.cJobAllocated[jobIndex] = true
+				c.cJAStamp[jobIndex] = time.Now().Unix()
 			}
 			fmt.Printf("c.phase: %v\n", c.phase)
 		}()
@@ -98,6 +114,23 @@ func (c *Coordinator) Done() bool {
 	return ret
 }
 
+func (c *Coordinator) jobDaemon() {
+	go func() {
+		for {
+			nowST := time.Now().Unix()
+			c.mu.Lock()
+			for i := 1; i < len(c.cJAStamp); i++ {
+				st := c.cJAStamp[i]
+				if st != 0 && nowST-st > 10 {
+					c.cJobAllocated[i] = false
+				}
+			}
+			c.mu.Unlock()
+			time.Sleep(time.Second * 2)
+		}
+	}()
+}
+
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
@@ -107,10 +140,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.filename = files
 	c.nReduce = nReduce
 	c.phase = mapPhase
-	c.cJob = make([]bool, len(files)+1)
+	c.cJobAllocated = make([]bool, len(files)+1)
 	c.cJobDone = make([]bool, len(files)+1)
+	c.cJAStamp = make([]int64, len(files)+1)
 	// Your code here.
-
+	c.jobDaemon()
 	c.server()
 	return &c
 }
