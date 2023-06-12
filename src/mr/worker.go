@@ -74,6 +74,37 @@ func doMapJob(filename string, mapf func(string, string) []KeyValue, jobIndex in
 	return interFilename
 }
 
+func doReduceJob(filenames []string, reducef func(string, []string) string) {
+	kva := []KeyValue{}
+	for _, filename := range filenames {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		// fmt.Printf("doReduceJob kva: %v\n", kva)
+		// time.Sleep(time.Second * 5)
+	}
+
+	values := []string{}
+	for _, v := range kva {
+		values = append(values, v.Value)
+	}
+
+	output := reducef(kva[0].Key, values)
+
+	fmt.Println("key ", kva[0].Key, " value ", output)
+	// this is the correct format for each line of Reduce output.
+	// fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+}
+
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -82,23 +113,39 @@ func Worker(mapf func(string, string) []KeyValue,
 	report := Report{}
 	response := Response{}
 	for {
+		// fmt.Printf("\"iam here before heartbeat\": %v\n", "iam here")
 		heartbeat(&report, &response)
+		// fmt.Printf("\"iam here after heartbeat\": %v\n", "iam here")
 		switch response.TType {
 		case MapJob:
-			report.Filename = doMapJob(response.Filename, mapf, response.TaskIndex)
+			fmt.Printf("\"hit here MapJob\": %v\n", "hit here MapJob")
+			// tmp := time.Now().Unix()
+			// fmt.Printf("response: %v\n", response)
+			// report.Filename = doMapJob(response.Filename, mapf, response.TaskIndex) //not need to report all mr- parameters
+			doMapJob(response.Filename, mapf, response.TaskIndex)
 			report.WJob = response.TaskIndex
 			report.WJobType = response.TType
+			// fmt.Println(response.TaskIndex, "cost:", time.Now().Unix()-tmp)
 		case ReduceJob:
-			fmt.Printf("\"not finish\": %v\n", "not finish")
+			doReduceJob(response.ReduceFilenames, reducef)
+			report.WJob = response.TaskIndex
+			report.WJobType = response.TType
+			// time.Sleep(time.Second)
 		case WaitJob:
+			report.WJob = response.TaskIndex
+			report.WJobType = response.TType
+			fmt.Println("waiting for a job.")
 			time.Sleep(time.Second)
 		case CompleteJob:
 			fmt.Printf("\"worker exit\": %v\n", "worker exit")
 			return
+		case TestJob:
+			fmt.Println("---------TestJob---------.")
+			time.Sleep(time.Second)
 		default:
 			panic(fmt.Sprintf("unexpected jobType %v", response.TType))
 		}
-		time.Sleep(time.Second)
+		// time.Sleep(time.Second)
 	}
 
 }

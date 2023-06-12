@@ -21,6 +21,7 @@ const (
 	ReduceJob
 	WaitJob
 	CompleteJob
+	TestJob
 )
 
 type InterFilename struct {
@@ -36,9 +37,10 @@ type Report struct {
 }
 
 type Response struct {
-	TaskIndex int
-	TType     int
-	Filename  string
+	TaskIndex       int
+	TType           int
+	Filename        string
+	ReduceFilenames []string
 }
 
 // Add your RPC definitions here.
